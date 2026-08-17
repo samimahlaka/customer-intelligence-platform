@@ -19,3 +19,7 @@ venv/
 # Local data
 data/*
 !data/.gitkeep
+
+# Local datasets
+data/raw/*
+!data/raw/.gitkeep
