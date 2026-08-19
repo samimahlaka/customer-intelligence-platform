@@ -76,7 +76,14 @@ def create_subscriptions(df: pd.DataFrame) -> pd.DataFrame:
     subscriptions["tenure_months"] = pd.to_numeric(
         subscriptions["tenure_months"], errors="coerce"
     ).astype("Int64")
-    subscriptions["monthly_charges"] = pd.to_numeric(iujjdksw cc   vcxx
+    subscriptions["monthly_charges"] = pd.to_numeric(
+        subscriptions["monthly_charges"], errors="coerce"
+    )
+
+    # Normalizations
+    subscriptions["has_phone_service"] = subscriptions["has_phone_service"] == "Yes"
+
+    subscriptions["multiple_lines_status"] = subscriptions["multiple_lines_status"].apply(
         _multiple_lines_status
     )
     subscriptions["internet_service_type"] = subscriptions["internet_service_type"].apply(
