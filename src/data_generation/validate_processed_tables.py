@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from data_generation.create_transactions import AUTOPAY_METHODS
+from data_generation.create_transactions import AUTOPAY_METHODS, SNAPSHOT_DATE
+from data_generation.create_support_tickets import (
+    ISSUE_TYPES,
+    PRIORITIES,
+    STATUSES,
+)
 
 
 PROCESSED_DIR = Path("data/processed")
@@ -183,16 +188,162 @@ def _validate_transactions(
         )
 
 
+def _validate_support_tickets(
+    support_tickets: pd.DataFrame,
+    customers: pd.DataFrame,
+    subscriptions: pd.DataFrame,
+) -> None:
+    expected_ticket_cols = [
+        "ticket_id",
+        "customer_id",
+        "created_at",
+        "closed_at",
+        "issue_type",
+        "priority",
+        "status",
+        "resolution_time_hours",
+        "satisfaction_score",
+    ]
+
+    _require_columns(support_tickets, expected_ticket_cols, "support_tickets")
+    _require_unique(support_tickets, "ticket_id", "support_tickets")
+    _require_coverage(support_tickets, "customer_id", customers, "customer_id")
+
+    required_non_null = [
+        "ticket_id",
+        "customer_id",
+        "created_at",
+        "issue_type",
+        "priority",
+        "status",
+    ]
+    _require_no_nulls(support_tickets, required_non_null, "support_tickets")
+
+    invalid_issue = ~support_tickets["issue_type"].isin(ISSUE_TYPES)
+    if invalid_issue.any():
+        preview = support_tickets.loc[invalid_issue, "issue_type"].head(10).tolist()
+        raise ValueError(f"support_tickets: invalid issue_type values: {preview}")
+
+    invalid_priority = ~support_tickets["priority"].isin(PRIORITIES)
+    if invalid_priority.any():
+        preview = support_tickets.loc[invalid_priority, "priority"].head(10).tolist()
+        raise ValueError(f"support_tickets: invalid priority values: {preview}")
+
+    invalid_status = ~support_tickets["status"].isin(STATUSES)
+    if invalid_status.any():
+        preview = support_tickets.loc[invalid_status, "status"].head(10).tolist()
+        raise ValueError(f"support_tickets: invalid status values: {preview}")
+
+    tickets = support_tickets.copy()
+    tickets["created_at"] = pd.to_datetime(tickets["created_at"])
+    tickets["closed_at"] = pd.to_datetime(tickets["closed_at"], errors="coerce")
+
+    open_mask = tickets["status"] == "open"
+    closedish_mask = ~open_mask
+
+    if tickets.loc[open_mask, "closed_at"].notna().any():
+        raise ValueError("support_tickets: open tickets must have null closed_at")
+    if tickets.loc[open_mask, "resolution_time_hours"].notna().any():
+        raise ValueError(
+            "support_tickets: open tickets must have null resolution_time_hours"
+        )
+    if tickets.loc[open_mask, "satisfaction_score"].notna().any():
+        raise ValueError(
+            "support_tickets: open tickets must have null satisfaction_score"
+        )
+
+    if tickets.loc[closedish_mask, "closed_at"].isna().any():
+        raise ValueError(
+            "support_tickets: closed/escalated tickets must have closed_at"
+        )
+    if tickets.loc[closedish_mask, "resolution_time_hours"].isna().any():
+        raise ValueError(
+            "support_tickets: closed/escalated tickets must have resolution_time_hours"
+        )
+    if tickets.loc[closedish_mask, "satisfaction_score"].isna().any():
+        raise ValueError(
+            "support_tickets: closed/escalated tickets must have satisfaction_score"
+        )
+
+    bad_resolution = tickets.loc[
+        closedish_mask & (tickets["resolution_time_hours"] < 0)
+    ]
+    if not bad_resolution.empty:
+        preview = bad_resolution.head(10).to_dict(orient="records")
+        raise ValueError(
+            "support_tickets: resolution_time_hours must be non-negative; "
+            f"examples: {preview}"
+        )
+
+    score = pd.to_numeric(tickets["satisfaction_score"], errors="coerce")
+    bad_scores = tickets.loc[
+        closedish_mask & ((score < 1) | (score > 5))
+    ]
+    if not bad_scores.empty:
+        preview = bad_scores.head(10).to_dict(orient="records")
+        raise ValueError(
+            "support_tickets: satisfaction_score must be between 1 and 5; "
+            f"examples: {preview}"
+        )
+
+    chronology = tickets.loc[
+        closedish_mask & (tickets["closed_at"] < tickets["created_at"])
+    ]
+    if not chronology.empty:
+        preview = chronology[
+            ["ticket_id", "created_at", "closed_at"]
+        ].head(10).to_dict(orient="records")
+        raise ValueError(
+            f"support_tickets: closed_at before created_at; examples: {preview}"
+        )
+
+    tenure_lookup = subscriptions.set_index("customer_id")["tenure_months"].to_dict()
+    snapshot = pd.Timestamp(SNAPSHOT_DATE)
+
+    zero_tenure_ids = {
+        customer_id
+        for customer_id, tenure in tenure_lookup.items()
+        if int(tenure) <= 0
+    }
+    if zero_tenure_ids:
+        bad_zero = tickets[tickets["customer_id"].isin(zero_tenure_ids)]
+        if not bad_zero.empty:
+            preview = bad_zero["customer_id"].head(10).tolist()
+            raise ValueError(
+                "support_tickets: tenure=0 customers must have 0 tickets; "
+                f"examples: {preview}"
+            )
+
+    for row in tickets.itertuples(index=False):
+        tenure_months = int(tenure_lookup[row.customer_id])
+        window_start = snapshot - pd.DateOffset(months=tenure_months)
+        created_at = pd.Timestamp(row.created_at)
+        if created_at < window_start or created_at > snapshot:
+            raise ValueError(
+                "support_tickets: created_at outside tenure window for "
+                f"{row.ticket_id}"
+            )
+        if pd.notna(row.closed_at):
+            closed_at = pd.Timestamp(row.closed_at)
+            if closed_at > snapshot:
+                raise ValueError(
+                    "support_tickets: closed_at after snapshot for "
+                    f"{row.ticket_id}"
+                )
+
+
 def main() -> None:
     customers_path = PROCESSED_DIR / "customers.csv"
     subscriptions_path = PROCESSED_DIR / "subscriptions.csv"
     billing_path = PROCESSED_DIR / "billing.csv"
     transactions_path = PROCESSED_DIR / "transactions.csv"
+    support_tickets_path = PROCESSED_DIR / "support_tickets.csv"
 
     customers = pd.read_csv(customers_path)
     subscriptions = pd.read_csv(subscriptions_path)
     billing = pd.read_csv(billing_path)
     transactions = pd.read_csv(transactions_path)
+    support_tickets = pd.read_csv(support_tickets_path)
 
     expected_customer_cols = [
         "customer_id",
@@ -257,9 +408,11 @@ def main() -> None:
     _require_no_nulls(billing, expected_billing_cols, "billing")
 
     _validate_transactions(transactions, customers, subscriptions, billing)
+    _validate_support_tickets(support_tickets, customers, subscriptions)
 
     print("Validation passed: processed tables are consistent.")
     print(f"Transactions rows validated: {len(transactions)}")
+    print(f"Support tickets rows validated: {len(support_tickets)}")
 
 
 if __name__ == "__main__":
