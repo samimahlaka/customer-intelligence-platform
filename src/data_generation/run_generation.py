@@ -7,6 +7,7 @@ from data_generation.create_customers import create_customers
 from data_generation.create_subscriptions import create_subscriptions
 from data_generation.create_support_tickets import create_support_tickets
 from data_generation.create_transactions import create_transactions
+from data_generation.create_usage_events import create_usage_events
 
 
 RAW_DATA_PATH = Path(
@@ -24,6 +25,7 @@ def main() -> None:
     billing = create_billing(df)
     transactions = create_transactions(subscriptions, billing)
     support_tickets = create_support_tickets(subscriptions)
+    usage_events = create_usage_events(subscriptions)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -42,6 +44,9 @@ def main() -> None:
     support_tickets_output_path = OUTPUT_DIR / "support_tickets.csv"
     support_tickets.to_csv(support_tickets_output_path, index=False)
 
+    usage_events_output_path = OUTPUT_DIR / "usage_events.csv"
+    usage_events.to_csv(usage_events_output_path, index=False)
+
     print(f"Created {customers_output_path}")
     print(f"Rows: {len(customers)}")
     print(f"Created {subscriptions_output_path}")
@@ -52,6 +57,8 @@ def main() -> None:
     print(f"Rows: {len(transactions)}")
     print(f"Created {support_tickets_output_path}")
     print(f"Rows: {len(support_tickets)}")
+    print(f"Created {usage_events_output_path}")
+    print(f"Rows: {len(usage_events)}")
 
 
 if __name__ == "__main__":

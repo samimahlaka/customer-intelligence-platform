@@ -10,6 +10,7 @@ from data_generation.create_support_tickets import (
     PRIORITIES,
     STATUSES,
 )
+from data_generation.create_usage_events import EVENT_TYPE_UNITS, EVENT_TYPES
 
 
 PROCESSED_DIR = Path("data/processed")
@@ -332,18 +333,130 @@ def _validate_support_tickets(
                 )
 
 
+def _validate_usage_events(
+    usage_events: pd.DataFrame,
+    customers: pd.DataFrame,
+    subscriptions: pd.DataFrame,
+) -> None:
+    expected_usage_cols = [
+        "event_id",
+        "customer_id",
+        "event_date",
+        "billing_period",
+        "event_type",
+        "quantity",
+        "unit",
+    ]
+
+    _require_columns(usage_events, expected_usage_cols, "usage_events")
+    _require_no_nulls(usage_events, expected_usage_cols, "usage_events")
+    _require_unique(usage_events, "event_id", "usage_events")
+    _require_coverage(usage_events, "customer_id", customers, "customer_id")
+    _require_non_negative(usage_events, ["quantity"], "usage_events")
+
+    invalid_type = ~usage_events["event_type"].isin(EVENT_TYPES)
+    if invalid_type.any():
+        preview = usage_events.loc[invalid_type, "event_type"].head(10).tolist()
+        raise ValueError(f"usage_events: invalid event_type values: {preview}")
+
+    unit_mismatch = usage_events[
+        usage_events["unit"] != usage_events["event_type"].map(EVENT_TYPE_UNITS)
+    ]
+    if not unit_mismatch.empty:
+        preview = unit_mismatch[
+            ["event_id", "event_type", "unit"]
+        ].head(10).to_dict(orient="records")
+        raise ValueError(
+            f"usage_events: unit does not match event_type; examples: {preview}"
+        )
+
+    events = usage_events.copy()
+    events["event_date"] = pd.to_datetime(events["event_date"])
+    period_mismatch = events[
+        events["billing_period"] != events["event_date"].dt.strftime("%Y-%m")
+    ]
+    if not period_mismatch.empty:
+        preview = period_mismatch[
+            ["event_id", "event_date", "billing_period"]
+        ].head(10).to_dict(orient="records")
+        raise ValueError(
+            "usage_events: billing_period does not match event_date; "
+            f"examples: {preview}"
+        )
+
+    tenure_lookup = subscriptions.set_index("customer_id")["tenure_months"].to_dict()
+    service_lookup = subscriptions.set_index("customer_id")[
+        [
+            "has_phone_service",
+            "internet_service_type",
+            "streaming_tv_status",
+            "streaming_movies_status",
+        ]
+    ].to_dict(orient="index")
+    snapshot = pd.Timestamp(SNAPSHOT_DATE)
+
+    zero_tenure_ids = {
+        customer_id
+        for customer_id, tenure in tenure_lookup.items()
+        if int(tenure) <= 0
+    }
+    if zero_tenure_ids:
+        bad_zero = events[events["customer_id"].isin(zero_tenure_ids)]
+        if not bad_zero.empty:
+            preview = bad_zero["customer_id"].head(10).tolist()
+            raise ValueError(
+                "usage_events: tenure=0 customers must have 0 events; "
+                f"examples: {preview}"
+            )
+
+    for row in events.itertuples(index=False):
+        tenure_months = int(tenure_lookup[row.customer_id])
+        window_start = snapshot - pd.DateOffset(months=tenure_months)
+        event_date = pd.Timestamp(row.event_date)
+        if event_date < window_start or event_date > snapshot:
+            raise ValueError(
+                f"usage_events: event_date outside tenure window for {row.event_id}"
+            )
+
+        service = service_lookup[row.customer_id]
+        internet = service["internet_service_type"]
+        has_phone = bool(service["has_phone_service"])
+        has_streaming = (
+            service["streaming_tv_status"] == "enabled"
+            or service["streaming_movies_status"] == "enabled"
+        )
+
+        if row.event_type == "data_usage" and internet not in {"dsl", "fiber_optic"}:
+            raise ValueError(
+                f"usage_events: data_usage without internet for {row.event_id}"
+            )
+        if row.event_type in {"voice_minutes", "sms_count"} and not has_phone:
+            raise ValueError(
+                f"usage_events: phone event without phone service for {row.event_id}"
+            )
+        if row.event_type == "streaming_hours" and (
+            internet not in {"dsl", "fiber_optic"} or not has_streaming
+        ):
+            raise ValueError(
+                f"usage_events: streaming_hours without streaming/internet for "
+                f"{row.event_id}"
+            )
+
+
 def main() -> None:
     customers_path = PROCESSED_DIR / "customers.csv"
     subscriptions_path = PROCESSED_DIR / "subscriptions.csv"
     billing_path = PROCESSED_DIR / "billing.csv"
     transactions_path = PROCESSED_DIR / "transactions.csv"
     support_tickets_path = PROCESSED_DIR / "support_tickets.csv"
+    usage_events_path = PROCESSED_DIR / "usage_events.csv"
 
     customers = pd.read_csv(customers_path)
     subscriptions = pd.read_csv(subscriptions_path)
     billing = pd.read_csv(billing_path)
     transactions = pd.read_csv(transactions_path)
     support_tickets = pd.read_csv(support_tickets_path)
+    usage_events = pd.read_csv(usage_events_path)
 
     expected_customer_cols = [
         "customer_id",
@@ -409,10 +522,12 @@ def main() -> None:
 
     _validate_transactions(transactions, customers, subscriptions, billing)
     _validate_support_tickets(support_tickets, customers, subscriptions)
+    _validate_usage_events(usage_events, customers, subscriptions)
 
     print("Validation passed: processed tables are consistent.")
     print(f"Transactions rows validated: {len(transactions)}")
     print(f"Support tickets rows validated: {len(support_tickets)}")
+    print(f"Usage events rows validated: {len(usage_events)}")
 
 
 if __name__ == "__main__":
