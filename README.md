@@ -34,3 +34,16 @@ PYTHONPATH=src python src/ingestion/upload_to_s3.py
 ```
 
 The script creates the bucket if needed, enables Block Public Access, overwrites the same object keys on rerun, and verifies all six objects exist.
+
+## Snowflake raw ingestion (S3 → Snowflake)
+
+Loads the six processed S3 objects into `CIP_DB.RAW` via an external stage and
+`COPY INTO`. AWS access uses a Snowflake storage integration + IAM role trust
+(no hard-coded AWS keys). Details: `snowflake/README.md`.
+
+```bash
+# Add Snowflake connection settings to .env (see .env.example), then:
+poetry run python snowflake/load_from_s3.py
+```
+
+This phase stops at the validated raw layer. dbt staging/analytics is next.

@@ -1,0 +1,30 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListProcessedPrefix",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "arn:aws:s3:::{{S3_BUCKET_NAME}}",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "processed/*"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ReadProcessedObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::{{S3_BUCKET_NAME}}/processed/*"
+    }
+  ]
+}
